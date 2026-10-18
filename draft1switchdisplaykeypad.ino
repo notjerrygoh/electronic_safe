@@ -3,10 +3,36 @@ const int CLK_PIN = A4; // Connect CLK to A4
 const int DIO_PIN = A5; // Connect DIO to A5
 const int PIN_SPST_SWITCH = 8; // SPST Switch pin
 
+// Keypad Row and Column Pins
+const int PIN_ROW1 = 2;
+const int PIN_ROW2 = 4;
+const int PIN_ROW3 = 5;
+const int PIN_ROW4 = 7;
+
+const int PIN_COL1 = 10;
+const int PIN_COL2 = 11;
+const int PIN_COL3 = 12;
+const int PIN_COL4 = 13;
+
+const byte rowPins[4] = {PIN_ROW1, PIN_ROW2, PIN_ROW3, PIN_ROW4};
+const byte colPins[4] = {PIN_COL1, PIN_COL2, PIN_COL3, PIN_COL4};
+
+char keys[4][4] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+
 // --- STATE TRACKING ---
 bool systemON = false;
+bool hasPinSet = false;
 
-// Segment byte mappings for characters (0-9, O, N, E, T, F, S, P, I, space)
+char storedPin[5] = "";
+char inputBuffer[5] = "    "; 
+int bufferIndex = 0;          
+
+// Segment byte mappings for characters (0-9, O, N, E, T, F, S, P, I, space, R, D)
 const uint8_t charTable[] = {
   0x3F, // 0
   0x06, // 1
@@ -31,6 +57,8 @@ uint8_t getSegment(char c) {
     case 'S': case 's': return 0x6D;
     case 'P': case 'p': return 0x73;
     case 'I': case 'i': return 0x06;
+    case 'R': case 'r': return 0x50;
+    case 'D': case 'd': return 0x5E;
     case ' ':           return 0x00;
     default:            return 0x00;
   }
@@ -118,12 +146,64 @@ void showSetPin2Seconds() {
   displayClear();
 }
 
+// Scrolls "PIN STORED" across the screen for 2 seconds
+void showPinStored2Seconds() {
+  const char* frames[] = {
+    "   P",
+    "  PI",
+    " PIN",
+    "PIN ",
+    "IN S",
+    "N ST",
+    " STO",
+    "STOR",
+    "TORE",
+    "ORED"
+  };
+  for (int i = 0; i < 10; i++) {
+    displayString(frames[i]);
+    delay(200); // 10 frames * 200ms = 2000ms (2 seconds)
+  }
+  displayClear();
+}
+
+// --- KEYPAD MATRIX SCANNER ---
+char scanKeypad() {
+  for (int r = 0; r < 4; r++) {
+    pinMode(rowPins[r], OUTPUT);
+    digitalWrite(rowPins[r], LOW);
+    delayMicroseconds(10);
+
+    for (int c = 0; c < 4; c++) {
+      if (digitalRead(colPins[c]) == LOW) {
+        char key = keys[r][c];
+        while (digitalRead(colPins[c]) == LOW) {
+          delay(10); // Wait release
+        }
+        pinMode(rowPins[r], INPUT);
+        delay(20); // Debounce
+        return key;
+      }
+    }
+    pinMode(rowPins[r], INPUT);
+  }
+  return '\0';
+}
+
 void setup() {
   Serial.begin(9600);
   pinMode(PIN_SPST_SWITCH, INPUT_PULLUP);
   pinMode(CLK_PIN, OUTPUT);
   pinMode(DIO_PIN, OUTPUT);
   displayClear();
+
+  // Setup Keypad Pins
+  for (int r = 0; r < 4; r++) {
+    pinMode(rowPins[r], INPUT);
+  }
+  for (int c = 0; c < 4; c++) {
+    pinMode(colPins[c], INPUT_PULLUP);
+  }
 }
 
 void loop() {
@@ -132,6 +212,9 @@ void loop() {
   // --- SWITCHED TO THE RIGHT (ON) ---
   if (switchState == HIGH && !systemON) {
     systemON = true;
+    bufferIndex = 0;
+    strcpy(inputBuffer, "    ");
+    hasPinSet = false;
     
     displayString("ON  ");
     delay(2000);
@@ -146,5 +229,52 @@ void loop() {
     
     displayClear();
     systemON = false;
+    hasPinSet = false;
+    bufferIndex = 0;
+  }
+
+  // If system is ON and PIN has already been set/stored, do nothing or remain idle
+  if (!systemON || hasPinSet) {
+    return;
+  }
+
+  // Handle Keypad Input
+  char key = scanKeypad();
+  if (key == '\0') return;
+
+  // 1. Type numbers 0-9
+  if (key >= '0' && key <= '9') {
+    if (bufferIndex < 4) {
+      inputBuffer[bufferIndex] = key;
+      bufferIndex++;
+      displayString(inputBuffer);
+    }
+  }
+  // 2. 'B' Key = Backspace (remove previous digit)
+  else if (key == 'B') {
+    if (bufferIndex > 0) {
+      bufferIndex--;
+      inputBuffer[bufferIndex] = ' ';
+      displayString(inputBuffer);
+    }
+  }
+  // 3. 'C' Key = Clear input buffer completely
+  else if (key == 'C') {
+    bufferIndex = 0;
+    strcpy(inputBuffer, "    ");
+    displayString(inputBuffer);
+  }
+  // 4. 'D' Key = Enter (only works when all 4 digits are keyed)
+  else if (key == 'D') {
+    if (bufferIndex == 4) {
+      for (int i = 0; i < 4; i++) {
+        storedPin[i] = inputBuffer[i];
+      }
+      storedPin[4] = '\0';
+      hasPinSet = true;
+
+      // Show "PIN STORED" for 2 seconds, then clear (no permanent pin display)
+      showPinStored2Seconds();
+    }
   }
 }
