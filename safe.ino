@@ -1,7 +1,11 @@
+#include <Servo.h>
+
 // --- PIN DEFINITIONS ---
-const int CLK_PIN = A4; // Connect CLK to A4
-const int DIO_PIN = A5; // Connect DIO to A5
-const int PIN_SPST_SWITCH = 8; // SPST Switch pin
+const int CLK_PIN = A4;         // Connect CLK to A4
+const int DIO_PIN = A5;         // Connect DIO to A5
+const int PIN_SPST_SWITCH = 8;  // SPST Switch pin
+const int PIN_SERVO = 3;        // Servo connected to Pin 3
+const int PIN_BUZZER = 6;       // Buzzer connected to Pin 6
 
 // Keypad Row and Column Pins
 const int PIN_ROW1 = 2;
@@ -23,6 +27,8 @@ char keys[4][4] = {
   {'7', '8', '9', 'C'},
   {'*', '0', '#', 'D'}
 };
+
+Servo safeServo;
 
 // --- PERSISTENT CORE STATES ---
 bool hasPinSet = false;
@@ -133,6 +139,7 @@ void displayClear() {
 // Check switch status and handle power-off interruption immediately
 bool checkPowerSwitch() {
   if (digitalRead(PIN_SPST_SWITCH) == LOW) {
+    noTone(PIN_BUZZER); // Immediately stop any playing tone
     displayString("OFF ");
     delay(1000);
     displayClear();
@@ -143,6 +150,32 @@ bool checkPowerSwitch() {
     return false; 
   }
   return true; 
+}
+
+// Plays a buzzer tone for 1 second while still monitoring the power switch
+bool playBuzzerTone1Sec(unsigned int frequency) {
+  tone(PIN_BUZZER, frequency);
+  unsigned long startTime = millis();
+  while (millis() - startTime < 1000) {
+    if (!checkPowerSwitch()) return false;
+    delay(10);
+  }
+  noTone(PIN_BUZZER);
+  return true;
+}
+
+// Actuates servo to 90 degrees and plays the unlock tone (1000 Hz) for 1 second
+bool unlockSafeHardware() {
+  safeLocked = false;
+  safeServo.write(90);
+  return playBuzzerTone1Sec(1000); // High-pitched 1000 Hz unlock tone
+}
+
+// Actuates servo to 0 degrees and plays a distinct lock tone (300 Hz) for 1 second
+bool lockSafeHardware() {
+  safeLocked = true;
+  safeServo.write(0);
+  return playBuzzerTone1Sec(300); // Low-pitched 300 Hz lock tone
 }
 
 // Smooth single-pass scroller (~350ms per frame)
@@ -235,9 +268,14 @@ char collectPinDigits(bool allowCancel = false) {
 void setup() {
   Serial.begin(9600);
   pinMode(PIN_SPST_SWITCH, INPUT_PULLUP);
+  pinMode(PIN_BUZZER, OUTPUT);
   pinMode(CLK_PIN, OUTPUT);
   pinMode(DIO_PIN, OUTPUT);
   displayClear();
+
+  // Initialize Servo at 0 degrees (Locked position)
+  safeServo.attach(PIN_SERVO);
+  safeServo.write(0);
 
   for (int r = 0; r < 4; r++) {
     pinMode(rowPins[r], INPUT);
@@ -255,6 +293,13 @@ void loop() {
     displayString("ON  ");
     delay(1000);
     if (!checkPowerSwitch()) return;
+
+    // Ensure servo position matches the remembered lock state
+    if (safeLocked) {
+      safeServo.write(0);
+    } else {
+      safeServo.write(90);
+    }
     
     // Check if initial password has ever been set
     if (!hasPinSet) {
@@ -271,6 +316,7 @@ void loop() {
       storedPin[4] = '\0';
       hasPinSet = true;
       safeLocked = true; // Default locked after initial setup
+      safeServo.write(0);
 
       if (!showMessageOnce("PIN STORED")) return;
       displayClear();
@@ -288,8 +334,9 @@ void loop() {
         if (result == 'D') {
           inputBuffer[4] = '\0';
           if (strcmp(inputBuffer, storedPin) == 0) {
-            safeLocked = false;
-            showMessageOnce("UNLOCKED");
+            // Rotate servo to 90 degrees and play unlock tone for 1 second
+            if (!unlockSafeHardware()) return;
+            if (!showMessageOnce("UNLOCKED")) return;
           } else {
             safeLocked = true;
             if (!showMessageOnce("INCORRECT PIN")) return;
@@ -303,8 +350,9 @@ void loop() {
         
         char key = scanKeypad();
         if (key == '#') {
-          safeLocked = true;
-          showMessageOnce("LOCKED");
+          // Rotate servo back to 0 degrees and play lock tone for 1 second
+          if (!lockSafeHardware()) return;
+          if (!showMessageOnce("LOCKED")) return;
           displayClear();
         }
         else if (key == '*') {
